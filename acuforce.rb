@@ -442,13 +442,13 @@ def link_changeset
       cls.each do | cl |
         $stderr.puts "Linking issue #{issue} with CL #{cl}"
         url = "#{HOME_URL}changesets/link"
-        $stderr.puts "  url = #{url}"
+        $stderr.puts "  url = #{url}" if DEBUG
         if true
           res = @a.post(url, { :authenticity_token => @authenticity_token, :issue => issue.to_s, :revision => cl.to_s })
         else
           res = @a.get("#{url}?issue=#{issue}&revision=#{cl}")
         end
-        pp res
+        pp res if DEBUG
       end
     end
   end
