@@ -1,12 +1,18 @@
 require 'yaml'
 require 'pp'
+if (ENV['AF_DEBUGGER'] || '0').to_i > 0
+  require 'rubygems'
+  gem 'ruby-debug' 
+  require 'ruby-debug'
+  Debugger.start
+end
 
-THIS_FILE = File.symlink?(__FILE__) ? File.readlink(__FILE__) : __FILE__
-THIS_DIR = File.dirname(THIS_FILE)
 
 class AcuForce
 
-DEBUG = false
+THIS_DIR = File.dirname(File.symlink?(__FILE__) ? File.readlink(__FILE__) : __FILE__)
+
+DEBUG = (ENV['AF_DEBUG'] || '0').to_i > 0
 
 ##DEPENDENCIES##
 TRAVERSAL_ORDER = [:project, :sprint, :issue, :change_list, :file]
@@ -16,7 +22,7 @@ EDIT_OPS_TBL = {:project => {}, :sprint => {}, :issue => {:delete => :delete_iss
 NEW_OPS_TBL = {:project => :new_project, :sprint => :new_sprint, :issue => :new_issue}
 
 ##LOGIN##
-SESSION_FILE = "#{THIS_DIR}/acuforce.session"
+SESSION_FILE = File.expand_path("~/.acuforce.session")
 LOGIN_URL = "https://acunote.cashnetusa.com/login"
 HOME_URL = "https://acunote.cashnetusa.com/"
 LOGIN_FIELDS = ['login[username]', 'login[password]']
@@ -92,6 +98,10 @@ PREDEFINED_FILTERS =
 
 def initialize(options)
   @a = Mechanize.new
+  @session = nil
+  # hidden parameter needed for any Ajax requests.
+  # See var FORM_AUTH_TOKEN = '...'; in /login response.
+  @authenticity_token = nil 
   @options = options
   @filters = parse_filters
   @edits = parse_edits
@@ -102,6 +112,10 @@ end
 #retrieved, maybe I'll fix that later.
 def process(start_node)
   r = @options[:recurse] || 1
+
+  if @options[:link]
+    return link_changeset
+  end
 
   #define and populate initial tree structure
   tree = { start_node => [] }
@@ -233,13 +247,37 @@ def pretty_print2(tree, level = 0, parent = nil)
 end
 
 
+def session
+  unless @session
+    if File.exists?(SESSION_FILE) 
+      @session = YAML.load_file(SESSION_FILE)
+      @a.cookie_jar = @session[:cookie_jar]
+      @authenticity_token = @session[:authenticity_token]
+      STDERR.puts "Loaded session file" if DEBUG
+    end
+    @session ||= { }
+  end
+  @session
+end
+
+def save_session!
+  @session ||= { }
+  @session[:cookie_jar] = @a.cookie_jar
+  @session[:authenticity_token] = @authenticity_token
+  #serialize session and save for later reuse
+  File.open(SESSION_FILE, "w") do |f|
+    f << @session.to_yaml
+  end
+  File.chmod(0600, SESSION_FILE)
+  self
+end
+
 def login(force = false)
   return true if @logged_in
 
   #Going to assume the session is good to save time here. The session will be
   #discarded and a force login will be performed if get_page fails.
-  if !force && File.exists?(SESSION_FILE) && @a.cookie_jar = YAML.load_file(SESSION_FILE) 
-    STDERR.puts "Loaded session file" if DEBUG
+  if !force && File.exists?(SESSION_FILE) && session
     return @logged_in = true
   end
 
@@ -261,10 +299,13 @@ def login(force = false)
   end
   STDERR.puts "Navigated to '#{p.title}'" if DEBUG
 
-  #serialize session and save for later reuse
-  File.open(SESSION_FILE, "w") do |f|
-    f << @a.cookie_jar.to_yaml
-  end
+  # Parse the hidden authenticity_token used in acunote.js Ajax requests.
+  p.body =~ /^\s*var\s+FORM_AUTH_TOKEN\s*=\s*'([^']+)'/
+  @authenticity_token = $1
+
+  # debugger
+  save_session!
+
   @logged_in = true
 end
 
@@ -389,6 +430,29 @@ def load_files(cl_number)
     #TODO: implement scraper 
     []
   end
+end
+
+
+def link_changeset
+  if (cls = @options[:change_list]) && (issues = @options[:issue])
+    login
+    #cls = cls.split(/\s*,\s*|\s+/)
+    #issues = issues.split(/\s*,\s*|\s+/)
+    issues.each do | issue |
+      cls.each do | cl |
+        $stderr.puts "Linking issue #{issue} with CL #{cl}"
+        url = "#{HOME_URL}changesets/link"
+        $stderr.puts "  url = #{url}"
+        if true
+          res = @a.post(url, { :authenticity_token => @authenticity_token, :issue => issue.to_s, :revision => cl.to_s })
+        else
+          res = @a.get("#{url}?issue=#{issue}&revision=#{cl}")
+        end
+        pp res
+      end
+    end
+  end
+  self
 end
 
 
